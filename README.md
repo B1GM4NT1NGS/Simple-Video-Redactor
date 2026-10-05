@@ -62,4 +62,10 @@ Run `python -m unittest discover -s tests`. The integration check generates synt
 
 ## License
 
+## Code signing policy
+
+SignPath application preparation is in progress; current builds are unsigned. See [Code signing policy](CODE_SIGNING.md) and [Privacy policy](PRIVACY.md). Approval and signing are pending. GitHub Actions provides a Windows build workflow; it does not publish executables to Releases.
+
+## Source license
+
 The application source is MIT licensed. Python, PySide6/Qt, FFmpeg and other dependencies have their own licenses. See [THIRD_PARTY.md](THIRD_PARTY.md), especially before redistributing a compiled build.
