@@ -1,78 +1,57 @@
 # Simple Video Redactor
 
-A local Windows desktop app for drawing black redactions over video, or drawing boxes around the areas you want to keep visible and blacking out everything else.
-
-If this software helped you, [buy me a coffee](https://buymeacoffee.com/bigzz).
+A free Windows desktop app for permanently redacting video, tracking moving subjects, and cropping or trimming footage. All video processing stays on your computer.
 
 ## Download and run
 
-1. Download the source ZIP from **Code → Download ZIP**, or use the source ZIP on the Releases page.
-2. Extract it to a folder on your computer.
-3. Install [Python 3.11 or newer for Windows](https://www.python.org/downloads/windows/).
-4. Double-click **Run Simple Video Redactor.cmd**. On first launch it creates a local environment and installs the dependencies from the Python package registry. Later launches use those installed dependencies.
+[Download Simple Video Redactor v1.0.0](https://github.com/B1GM4NT1NGS/Simple-Video-Redactor/releases/latest).
 
-For macOS/Linux or manual setup:
+1. Download the source ZIP and extract it.
+2. Install [Python 3.11 or newer for Windows](https://www.python.org/downloads/windows/).
+3. Double-click **Run Simple Video Redactor.cmd**. The first launch installs the required dependencies; later launches use the local environment.
 
-```sh
-python -m venv .venv
-# Activate your environment, then:
-python -m pip install -r requirements.txt
-python simple_video_redactor.py
-```
+The download contains source files, not a compiled executable. The app opens with an empty screen ready to import your video.
 
-The interface is developed and tested on Windows. Other platforms are untested. The GitHub download contains source files, not a compiled executable. Browser and security software decisions vary; no download format can guarantee acceptance.
+## Features
 
-## Using the app
+- **Hide boxes:** black out selected areas of the footage.
+- **Keep boxes visible:** keep selected areas visible and black out everything outside them.
+- **Track subjects:** make one or more boxes follow moving subjects. Mix tracked and fixed boxes.
+- **Film strip preview:** drag to scrub through the video; drag the yellow end handles to shorten it.
+- **Crop before export:** drag the crop frame's corners to remove unwanted edges.
+- **Box controls:** numbered cards show tracking status and timing, with a bin beside each box.
+- **Clear all changes:** reset the edit while keeping the imported video open.
+- **MP4 export:** burn redactions into the video, with optional audio removal.
 
-The app always starts with an empty video screen. Click **Import video** to select footage.
+## How to use it
 
-- **Keep boxes visible** is the default: everything outside active boxes becomes black.
-- **Hide boxes** blacks out areas inside active boxes.
-- Pause and drag to draw a box. Select it to move it, or drag its bottom-right corner to resize.
-- Set each box's start/end times in seconds if it should apply to only part of the video.
-- Drag the film strip to scrub: the paused preview updates to the selected frame. Drag its yellow end handles to trim the beginning/end; the selected range is used for playback and export. You can export a trimmed video even without redaction boxes.
-- Press **Play** for a clean redaction preview. Uncheck clean preview to edit against the original footage.
-- Optionally remove audio.
-- Click **Export redacted MP4**. When asked whether to crop first, choose **No** for an ordinary export or **Yes** to open the crop-and-trim editor.
-- In the crop editor, drag any yellow corner to crop the picture, or drag inside the crop rectangle to move it. Drag the yellow timeline handles to shorten the beginning/end. Click the thumbnail strip to scrub, or enter precise start/end seconds. **Play selection** previews that time range. **Apply & export** opens the save dialog.
+Import a video, pause on a clear frame, and draw a box. Choose **Hide boxes** or **Keep boxes visible**. Select a box and click **Track selected subject** if it should follow movement. Repeat for additional subjects.
 
-Cropping applies after redaction. Trimming keeps each box's timing aligned with the original footage. Exported redactions are burned into the video pixels. Original files are preserved.
+Play or scrub to review. To correct a track, pause, move or resize its box, then track again. Changing a box or its time range clears its previous track. Use the bin to remove a box, or **Clear all changes** to start again.
 
-## Formats
+Use the film strip's yellow handles to set the video length. Click **Export redacted MP4** and choose whether to crop the picture before saving. Your original video is preserved.
 
-Common import formats include **MP4, AVI, MKV, MOV, WMV, WebM, M4V, MPG/MPEG, MTS/M2TS, TS, 3GP, FLV, VOB, OGV and ASF**. The included FFmpeg engine prepares a playable preview. Actual support depends on the codec, file integrity and encryption; DRM-protected files are unsupported. Exports use **MP4 with H.264 video and AAC audio**.
+## Supported formats
 
-## Moving subject tracking
+Common imports include MP4, AVI, MKV, MOV, WMV, WebM, M4V, MPEG, MTS/M2TS, TS, 3GP, FLV, VOB, OGV and ASF. Support depends on the file's codec and integrity; DRM-protected footage is unsupported. Exports use MP4 with H.264 video and AAC audio.
 
-Pause on a clear frame, draw a box around the subject, select it, and click **Track selected subject**. Tracking runs locally over the selected box time range, forwards and backwards from the current frame. Choose **Hide boxes** to follow with a black box, or **Keep boxes visible** to follow with a visible window and black out everything else. Multiple fixed and tracked boxes can be combined.
+## Privacy and review
 
-Play or scrub through the entire track before exporting. To correct drift, pause, move or resize the box, then click **Track selected subject** again. Adjusting a box or changing its time range clears its old track. **Make selected box fixed** freezes it at the current position. **Cancel tracking / mask** stops background processing. If the tracker reports a lost subject, no partial track is applied: shorten the time range or redraw and retry. Tracking uses a rectangular region, not a subject-shaped cutout, and can drift during occlusion, abrupt movement or scene cuts.
+Footage stays local. Initial dependency installation requires Internet access; external links open only when clicked. See the [privacy policy](PRIVACY.md).
 
-Tracked boxes are burned into exports, including cropped and trimmed exports.
+Tracking uses rectangular boxes and can drift when subjects become hidden, cross each other or move abruptly. Review the whole exported video before sharing it. Audio remains unless removed. Rotation metadata is ignored consistently in preview and export.
 
-## Limits and privacy
-
-Automatic subject tracking is optional; boxes remain fixed until tracked. Review the entire exported video before sharing it. Audio remains unless you choose to remove it. Rotation metadata is ignored consistently in preview and export. Video processing stays on your computer; importing/exporting never uploads footage. First-time dependency installation needs Internet access. The coffee button opens its website only when clicked.
-
-## Optional portable build
-
-Developers can build a single Windows executable locally:
+## Build from source
 
 ```sh
 python -m pip install -r requirements.txt pyinstaller
 python build_portable.py
 ```
 
-The result appears in `dist/`. The build includes the video engine and Qt runtime. Compiled executables are not uploaded to this repository.
+The portable Windows executable appears in `dist/`. Current builds are unsigned; see the [code signing policy](CODE_SIGNING.md). Run `python -m unittest discover -s tests` for the video-processing integration checks.
 
-## Tests
+## License and support
 
-Run `python -m unittest discover -s tests`. The integration check generates synthetic footage and verifies both redaction modes, crop dimensions, trimmed duration, audio retention and redaction timing after trimming.
+The application source is MIT licensed. Dependencies have their own licenses; see [THIRD_PARTY.md](THIRD_PARTY.md). Report problems through [GitHub issues](https://github.com/B1GM4NT1NGS/Simple-Video-Redactor/issues).
 
-## Code signing policy
-
-Current builds are unsigned. SignPath is not being used. See [Code signing policy](CODE_SIGNING.md) and [Privacy policy](PRIVACY.md). GitHub Actions provides a Windows build workflow; it does not publish executables to Releases.
-
-## Source license
-
-The application source is MIT licensed. Python, PySide6/Qt, FFmpeg and other dependencies have their own licenses. See [THIRD_PARTY.md](THIRD_PARTY.md), especially before redistributing a compiled build.
+If this software helped you, [buy me a coffee](https://buymeacoffee.com/bigzz).
