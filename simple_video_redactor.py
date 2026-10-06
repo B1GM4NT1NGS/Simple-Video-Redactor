@@ -1,5 +1,5 @@
 import sys, pathlib, tempfile, shutil, re, json, subprocess
-from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal,QThread,QSize
+from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal,QThread,QSize,QEvent
 from PySide6.QtGui import QPainter,QColor,QPen,QImage,QDesktopServices
 from PySide6.QtWidgets import QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,QFileDialog,QComboBox,QCheckBox,QSlider,QListWidget,QDoubleSpinBox,QMessageBox,QDialog,QStyledItemDelegate,QStyle,QListWidgetItem
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink
@@ -211,6 +211,13 @@ class CropDialog(QDialog):
         self.player.stop();self.player.setSource(QUrl());self.thumbs.kill();self.thumbs.waitForFinished(1000);shutil.rmtree(self.thumb_dir,ignore_errors=True)
 
 class BoxListDelegate(QStyledItemDelegate):
+    deleteRequested=Signal(int)
+    def bin_rect(self,rect):return QRectF(rect.left()+9,rect.top()+19,27,30)
+    def editorEvent(self,event,model,option,index):
+        if event.type() in (QEvent.Type.MouseButtonPress,QEvent.Type.MouseButtonRelease) and event.button()==Qt.MouseButton.LeftButton and self.bin_rect(option.rect).contains(event.position()):
+            if event.type()==QEvent.Type.MouseButtonRelease:self.deleteRequested.emit(index.row())
+            return True
+        return super().editorEvent(event,model,option,index)
     def sizeHint(self,option,index):return QSize(280,68)
     def paint(self,painter,option,index):
         painter.save();selected=bool(option.state & QStyle.StateFlag.State_Selected);hover=bool(option.state & QStyle.StateFlag.State_MouseOver)
@@ -219,10 +226,11 @@ class BoxListDelegate(QStyledItemDelegate):
         painter.setPen(QPen(QColor('#72dfb6' if selected else '#40536a' if hover else '#2d3d52'),1))
         painter.setBrush(QColor('#203e3a' if selected else '#26364a' if hover else '#1c293a'));painter.drawRoundedRect(r,9,9)
         number,tracked,start,end=index.data(Qt.ItemDataRole.UserRole)
-        badge=QRectF(r.left()+12,r.top()+15,34,34);painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#72dfb6' if selected else '#33465c'));painter.drawRoundedRect(badge,8,8)
+        binbox=self.bin_rect(option.rect);painter.setPen(QPen(QColor('#e6a1a7'),1.6));painter.setBrush(Qt.BrushStyle.NoBrush);cx=binbox.center().x();cy=binbox.center().y();painter.drawRoundedRect(QRectF(cx-6,cy-5,12,14),2,2);painter.drawLine(QPointF(cx-9,cy-8),QPointF(cx+9,cy-8));painter.drawLine(QPointF(cx-3,cy-11),QPointF(cx+3,cy-11));painter.drawLine(QPointF(cx-2,cy-2),QPointF(cx-2,cy+6));painter.drawLine(QPointF(cx+2,cy-2),QPointF(cx+2,cy+6))
+        badge=QRectF(r.left()+43,r.top()+15,34,34);painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#72dfb6' if selected else '#33465c'));painter.drawRoundedRect(badge,8,8)
         font=option.font;font.setBold(True);painter.setFont(font);painter.setPen(QColor('#122c26' if selected else '#e9eef8'));painter.drawText(badge,Qt.AlignmentFlag.AlignCenter,str(number))
-        title=QRectF(r.left()+58,r.top()+9,r.width()-70,24);painter.setPen(QColor('#f0f6fc'));painter.drawText(title,Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,f'Box {number}')
-        font.setBold(False);font.setPointSize(9);painter.setFont(font);painter.setPen(QColor('#9eb2c9'));painter.drawText(QRectF(r.left()+58,r.top()+34,r.width()-70,21),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,f'{start:.2f}s – {end:.2f}s')
+        title=QRectF(r.left()+89,r.top()+9,r.width()-101,24);painter.setPen(QColor('#f0f6fc'));painter.drawText(title,Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,f'Box {number}')
+        font.setBold(False);font.setPointSize(9);painter.setFont(font);painter.setPen(QColor('#9eb2c9'));painter.drawText(QRectF(r.left()+89,r.top()+34,r.width()-101,21),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,f'{start:.2f}s – {end:.2f}s')
         status='TRACKED' if tracked else 'FIXED';width=70 if tracked else 54;tag=QRectF(r.right()-width-12,r.top()+12,width,22)
         painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#284d43' if tracked else '#304054'));painter.drawRoundedRect(tag,5,5);painter.setPen(QColor('#8ae6bd' if tracked else '#bac9da'));font.setPointSize(8);font.setBold(True);painter.setFont(font);painter.drawText(tag,Qt.AlignmentFlag.AlignCenter,status)
         painter.restore()
@@ -241,14 +249,14 @@ class Window(QMainWindow):
         self.seek=QSlider(Qt.Orientation.Horizontal);self.seek.sliderMoved.connect(self.player.setPosition);left.addWidget(self.seek)
         hint=QLabel('Pause and drag to draw. Select a box to move it; drag its bottom-right corner to resize.');hint.setWordWrap(True);left.addWidget(hint)
         right.addWidget(QLabel('Redaction method'));self.mode=QComboBox();self.mode.addItems(['Keep boxes visible · black out outside','Hide boxes · black out inside']);self.mode.currentIndexChanged.connect(self.screen.update);right.addWidget(self.mode)
-        self.draw_button=QPushButton('+ Draw another box');self.draw_button.clicked.connect(self.new_box);right.addWidget(self.draw_button);self.box_heading=QLabel("Subjects · 0 boxes");right.addWidget(self.box_heading);self.box_list=QListWidget();self.box_list.setMinimumWidth(300);self.box_list.setMinimumHeight(170);self.box_list.setMouseTracking(True);self.box_list.setSpacing(4);self.box_list.setItemDelegate(BoxListDelegate(self.box_list));self.box_list.currentRowChanged.connect(self.select_box);right.addWidget(self.box_list,1)
+        self.draw_button=QPushButton('+ Draw another box');self.draw_button.clicked.connect(self.new_box);right.addWidget(self.draw_button);self.box_heading=QLabel("Subjects · 0 boxes");right.addWidget(self.box_heading);self.box_list=QListWidget();self.box_list.setMinimumWidth(300);self.box_list.setMinimumHeight(170);self.box_list.setMouseTracking(True);self.box_list.setSpacing(4);self.box_delegate=BoxListDelegate(self.box_list);self.box_delegate.deleteRequested.connect(self.remove_box);self.box_list.setItemDelegate(self.box_delegate);self.box_list.currentRowChanged.connect(self.select_box);right.addWidget(self.box_list,1)
         self.track_button=QPushButton('Track selected subject');self.track_button.clicked.connect(self.track_selected);right.addWidget(self.track_button)
         self.untrack_button=QPushButton('Make selected box fixed');self.untrack_button.clicked.connect(self.untrack);right.addWidget(self.untrack_button)
         self.cancel_button=QPushButton('Cancel tracking / mask');self.cancel_button.clicked.connect(self.cancel_job);self.cancel_button.setVisible(False);right.addWidget(self.cancel_button)
         right.addWidget(QLabel('Selected box times (seconds)'));times=QHBoxLayout();self.start=QDoubleSpinBox();self.end=QDoubleSpinBox()
         for spin in [self.start,self.end]:spin.setDecimals(2);spin.setRange(0,999999);spin.valueChanged.connect(self.change_times)
         times.addWidget(QLabel('From'));times.addWidget(self.start);times.addWidget(QLabel('To'));times.addWidget(self.end);right.addLayout(times)
-        delete=QPushButton('Delete selected box');delete.clicked.connect(self.delete_box);right.addWidget(delete);clear=QPushButton('Clear all boxes');clear.clicked.connect(self.clear);right.addWidget(clear)
+        delete=QPushButton('Delete selected box');delete.clicked.connect(self.delete_box);right.addWidget(delete);self.reset_button=QPushButton('Clear all changes');self.reset_button.clicked.connect(self.clear_changes);right.addWidget(self.reset_button)
         self.mute=QCheckBox('Remove audio from export');right.addWidget(self.mute);note=QLabel('Draw around a subject, then click Track selected subject. Tracking can drift: review the whole video, adjust the box and retrack if needed.');note.setWordWrap(True);note.setMaximumWidth(320);right.addWidget(note)
         self.export_button=QPushButton('Export redacted MP4…');self.export_button.setObjectName('primary');self.export_button.clicked.connect(self.export);right.addWidget(self.export_button)
         self.status=QLabel('Ready to import.');self.status.setWordWrap(True);root.addWidget(self.status)
@@ -264,9 +272,9 @@ class Window(QMainWindow):
     def refresh(self):
         self.box_list.blockSignals(True);self.box_list.clear();self.box_heading.setText(f'Subjects · {len(self.boxes)} '+('box' if len(self.boxes)==1 else 'boxes'));
         for i,b in enumerate(self.boxes):
-            item=QListWidgetItem(f'Box {i+1} · '+('tracked' if b.get('track') else 'fixed')+f" · {b['start']:.2f}s to {b['end']:.2f}s");item.setData(Qt.ItemDataRole.UserRole,(i+1,bool(b.get('track')),b['start'],b['end']));self.box_list.addItem(item)
+            item=QListWidgetItem(f'Box {i+1} · '+('tracked' if b.get('track') else 'fixed')+f" · {b['start']:.2f}s to {b['end']:.2f}s");item.setToolTip('Click the bin on the left to delete this box and its track.');item.setData(Qt.ItemDataRole.UserRole,(i+1,bool(b.get('track')),b['start'],b['end']));self.box_list.addItem(item)
         self.box_list.setCurrentRow(self.selected);self.box_list.blockSignals(False);self.select_box(self.selected)
-        self.import_button.setEnabled(not self.busy);self.export_button.setEnabled(bool(self.source and self.boxes) and not self.busy);self.draw_button.setEnabled(bool(self.source) and not self.busy);self.play.setEnabled(bool(self.source) and not self.busy);self.mode.setEnabled(not self.busy)
+        self.import_button.setEnabled(not self.busy);self.export_button.setEnabled(bool(self.source and self.boxes) and not self.busy);self.draw_button.setEnabled(bool(self.source) and not self.busy);self.play.setEnabled(bool(self.source) and not self.busy);self.mode.setEnabled(not self.busy);self.reset_button.setEnabled(bool(self.source) and not self.busy)
     def select_box(self,i):
         self.selected=i
         for spin in [self.start,self.end]:spin.blockSignals(True);spin.setEnabled(0<=i<len(self.boxes) and not self.busy)
@@ -304,6 +312,12 @@ class Window(QMainWindow):
         if self.busy:return
         if 0<=self.selected<len(self.boxes):self.boxes.pop(self.selected)
         self.selected=-1;self.refresh()
+    def remove_box(self,index):
+        if self.busy or not 0<=index<len(self.boxes):return
+        self.boxes.pop(index);self.selected=min(index,len(self.boxes)-1);self.refresh();self.screen.update();self.status.setText('Box removed.')
+    def clear_changes(self):
+        if self.busy:return
+        self.player.pause();self.player.setPosition(0);self.boxes=[];self.selected=-1;self.screen.drag=None;self.screen.draw=True;self.mode.setCurrentIndex(0);self.mute.setChecked(False);self.clean.setChecked(False);self.refresh();self.screen.update();self.status.setText('All changes cleared. The imported video is ready to edit again.')
     def clear(self):
         if self.busy:return
         self.boxes=[];self.selected=-1;self.screen.draw=True;self.refresh()
