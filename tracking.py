@@ -10,6 +10,27 @@ def box_at(box, seconds):
     index = max(0, min(len(samples)-1, bisect.bisect_right(samples, seconds, key=lambda s:s['t'])-1))
     return dict(box, **{k:samples[index][k] for k in ('x','y','w','h')})
 
+def motion_fallback(previous, image, rect):
+    """Recover a failed correlation tracker using verified local feature motion."""
+    old=cv2.cvtColor(previous,cv2.COLOR_BGR2GRAY);new=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
+    x,y,w,h=map(int,rect);mask=np.zeros_like(old);mask[max(0,y):y+h,max(0,x):x+w]=255
+    points=cv2.goodFeaturesToTrack(old,120,.01,4,mask=mask)
+    if points is None or len(points)<4:return None
+    moved,status,_=cv2.calcOpticalFlowPyrLK(old,new,points,None,winSize=(31,31),maxLevel=3)
+    if moved is None:return None
+    back,reverse,_=cv2.calcOpticalFlowPyrLK(new,old,moved,None,winSize=(31,31),maxLevel=3)
+    if back is None:return None
+    valid=(status.ravel()==1)&(reverse.ravel()==1)&(np.linalg.norm(back-points,axis=2).ravel()<1.5)
+    if valid.sum()<4:return None
+    deltas=(moved-points).reshape(-1,2)[valid];shift=np.median(deltas,axis=0)
+    consistent=np.linalg.norm(deltas-shift,axis=1)<3
+    if consistent.sum()<4 or consistent.mean()<.6:return None
+    shift=np.median(deltas[consistent],axis=0)
+    if np.linalg.norm(shift)>max(w,h):return None
+    height,width=old.shape;nx=int(round(x+shift[0]));ny=int(round(y+shift[1]))
+    if nx<0 or ny<0 or nx+w>width or ny+h>height:return None
+    return nx,ny,w,h
+
 def track_subject(video, box, seed_time, progress=lambda p:None, cancelled=lambda:False):
     cap = cv2.VideoCapture(str(video))
     try:
@@ -33,15 +54,20 @@ def track_subject(video, box, seed_time, progress=lambda p:None, cancelled=lambd
         save(seed,initial)
         for direction,stop in [(1,last),(-1,first)]:
             tracker=cv2.TrackerCSRT_create();tracker.init(frame,initial)
+            previous=frame;last_rect=initial
             if direction==1:cap.set(cv2.CAP_PROP_POS_FRAMES,seed+1)
             for index in range(seed+direction,stop+direction,direction):
                 if cancelled(): raise InterruptedError('Tracking cancelled.')
                 if direction==-1:cap.set(cv2.CAP_PROP_POS_FRAMES,index)
                 ok,image=cap.read()
                 if not ok:raise ValueError(f'Could not read frame at {index/fps:.2f}s.')
-                ok,rect=tracker.update(cv2.resize(image,size))
-                if not ok:raise ValueError(f'Subject lost at {index/fps:.2f}s. Shorten the box time range or redraw the box and try again. No partial track was applied.')
+                image=cv2.resize(image,size);ok,rect=tracker.update(image)
+                if not ok:
+                    rect=motion_fallback(previous,image,last_rect)
+                    if rect is None:raise ValueError(f'Subject lost at {index/fps:.2f}s. Pause on a clear frame, draw a close-fitting box with a little margin, and try again. For a scene cut or hidden subject, shorten the box time range. No partial track was applied.')
+                    tracker=cv2.TrackerCSRT_create();tracker.init(image,rect)
                 save(index,rect)
+                previous=image;last_rect=rect
         return [samples[i] for i in sorted(samples)]
     finally:cap.release()
 
