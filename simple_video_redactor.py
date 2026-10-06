@@ -1,7 +1,7 @@
 import sys, pathlib, tempfile, shutil, re, json, subprocess
-from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal,QThread
+from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal,QThread,QSize
 from PySide6.QtGui import QPainter,QColor,QPen,QImage,QDesktopServices
-from PySide6.QtWidgets import QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,QFileDialog,QComboBox,QCheckBox,QSlider,QListWidget,QDoubleSpinBox,QMessageBox,QDialog
+from PySide6.QtWidgets import QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,QFileDialog,QComboBox,QCheckBox,QSlider,QListWidget,QDoubleSpinBox,QMessageBox,QDialog,QStyledItemDelegate,QStyle,QListWidgetItem
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink
 
 def engine():
@@ -210,9 +210,26 @@ class CropDialog(QDialog):
     def shutdown(self):
         self.player.stop();self.player.setSource(QUrl());self.thumbs.kill();self.thumbs.waitForFinished(1000);shutil.rmtree(self.thumb_dir,ignore_errors=True)
 
+class BoxListDelegate(QStyledItemDelegate):
+    def sizeHint(self,option,index):return QSize(280,68)
+    def paint(self,painter,option,index):
+        painter.save();selected=bool(option.state & QStyle.StateFlag.State_Selected);hover=bool(option.state & QStyle.StateFlag.State_MouseOver)
+        r=QRectF(option.rect).adjusted(2,2,-2,-2)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#72dfb6' if selected else '#40536a' if hover else '#2d3d52'),1))
+        painter.setBrush(QColor('#203e3a' if selected else '#26364a' if hover else '#1c293a'));painter.drawRoundedRect(r,9,9)
+        number,tracked,start,end=index.data(Qt.ItemDataRole.UserRole)
+        badge=QRectF(r.left()+12,r.top()+15,34,34);painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#72dfb6' if selected else '#33465c'));painter.drawRoundedRect(badge,8,8)
+        font=option.font;font.setBold(True);painter.setFont(font);painter.setPen(QColor('#122c26' if selected else '#e9eef8'));painter.drawText(badge,Qt.AlignmentFlag.AlignCenter,str(number))
+        title=QRectF(r.left()+58,r.top()+9,r.width()-70,24);painter.setPen(QColor('#f0f6fc'));painter.drawText(title,Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,f'Box {number}')
+        font.setBold(False);font.setPointSize(9);painter.setFont(font);painter.setPen(QColor('#9eb2c9'));painter.drawText(QRectF(r.left()+58,r.top()+34,r.width()-70,21),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter,f'{start:.2f}s – {end:.2f}s')
+        status='TRACKED' if tracked else 'FIXED';width=70 if tracked else 54;tag=QRectF(r.right()-width-12,r.top()+12,width,22)
+        painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#284d43' if tracked else '#304054'));painter.drawRoundedRect(tag,5,5);painter.setPen(QColor('#8ae6bd' if tracked else '#bac9da'));font.setPointSize(8);font.setBold(True);painter.setFont(font);painter.drawText(tag,Qt.AlignmentFlag.AlignCenter,status)
+        painter.restore()
+
 class Window(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle('Simple Video Redactor');self.resize(1160,780)
+        super().__init__();self.setWindowTitle('Simple Video Redactor');self.resize(1160,900)
         self.cache=pathlib.Path(tempfile.mkdtemp(prefix='VideoRedactor-'));self.source=None;self.boxes=[];self.selected=-1;self.busy=False;self.operation='';self.job=None;self.preview=self.cache/'preview.mp4';self.output=None;self.temp_output=None
         self.player=QMediaPlayer(self);self.audio=QAudioOutput(self);self.player.setAudioOutput(self.audio);self.sink=QVideoSink(self);self.player.setVideoSink(self.sink)
         self.process=QProcess(self);self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels);self.log=b'';self.process.readyReadStandardOutput.connect(self.read_log);self.process.finished.connect(self.finished);self.process.errorOccurred.connect(self.process_error)
@@ -224,7 +241,7 @@ class Window(QMainWindow):
         self.seek=QSlider(Qt.Orientation.Horizontal);self.seek.sliderMoved.connect(self.player.setPosition);left.addWidget(self.seek)
         hint=QLabel('Pause and drag to draw. Select a box to move it; drag its bottom-right corner to resize.');hint.setWordWrap(True);left.addWidget(hint)
         right.addWidget(QLabel('Redaction method'));self.mode=QComboBox();self.mode.addItems(['Keep boxes visible · black out outside','Hide boxes · black out inside']);self.mode.currentIndexChanged.connect(self.screen.update);right.addWidget(self.mode)
-        self.draw_button=QPushButton('+ Draw another box');self.draw_button.clicked.connect(self.new_box);right.addWidget(self.draw_button);self.box_list=QListWidget();self.box_list.setMaximumWidth(320);self.box_list.currentRowChanged.connect(self.select_box);right.addWidget(self.box_list,1)
+        self.draw_button=QPushButton('+ Draw another box');self.draw_button.clicked.connect(self.new_box);right.addWidget(self.draw_button);self.box_heading=QLabel("Subjects · 0 boxes");right.addWidget(self.box_heading);self.box_list=QListWidget();self.box_list.setMinimumWidth(300);self.box_list.setMinimumHeight(170);self.box_list.setMouseTracking(True);self.box_list.setSpacing(4);self.box_list.setItemDelegate(BoxListDelegate(self.box_list));self.box_list.currentRowChanged.connect(self.select_box);right.addWidget(self.box_list,1)
         self.track_button=QPushButton('Track selected subject');self.track_button.clicked.connect(self.track_selected);right.addWidget(self.track_button)
         self.untrack_button=QPushButton('Make selected box fixed');self.untrack_button.clicked.connect(self.untrack);right.addWidget(self.untrack_button)
         self.cancel_button=QPushButton('Cancel tracking / mask');self.cancel_button.clicked.connect(self.cancel_job);self.cancel_button.setVisible(False);right.addWidget(self.cancel_button)
@@ -245,7 +262,10 @@ class Window(QMainWindow):
         if self.player.playbackState()==QMediaPlayer.PlaybackState.PlayingState:self.player.pause()
         else:self.clean.setChecked(True);self.screen.draw=False;self.player.play()
     def refresh(self):
-        self.box_list.blockSignals(True);self.box_list.clear();self.box_list.addItems([f'Box {i+1}'+(' · tracked' if b.get('track') else '') for i,b in enumerate(self.boxes)]);self.box_list.setCurrentRow(self.selected);self.box_list.blockSignals(False);self.select_box(self.selected)
+        self.box_list.blockSignals(True);self.box_list.clear();self.box_heading.setText(f'Subjects · {len(self.boxes)} '+('box' if len(self.boxes)==1 else 'boxes'));
+        for i,b in enumerate(self.boxes):
+            item=QListWidgetItem(f'Box {i+1} · '+('tracked' if b.get('track') else 'fixed')+f" · {b['start']:.2f}s to {b['end']:.2f}s");item.setData(Qt.ItemDataRole.UserRole,(i+1,bool(b.get('track')),b['start'],b['end']));self.box_list.addItem(item)
+        self.box_list.setCurrentRow(self.selected);self.box_list.blockSignals(False);self.select_box(self.selected)
         self.import_button.setEnabled(not self.busy);self.export_button.setEnabled(bool(self.source and self.boxes) and not self.busy);self.draw_button.setEnabled(bool(self.source) and not self.busy);self.play.setEnabled(bool(self.source) and not self.busy);self.mode.setEnabled(not self.busy)
     def select_box(self,i):
         self.selected=i
@@ -357,7 +377,7 @@ class Window(QMainWindow):
         if self.temp_output and self.temp_output.exists():self.temp_output.unlink(missing_ok=True)
         shutil.rmtree(self.cache,ignore_errors=True);event.accept()
 
-STYLE='''QWidget{background:#141c28;color:#e9eef8;font:14px "Segoe UI";} QPushButton,QComboBox,QDoubleSpinBox{background:#26354a;border:1px solid #40506a;border-radius:6px;padding:9px;} QPushButton:hover{background:#34485f;} QPushButton:disabled{color:#6e7a8b;} QPushButton#primary{background:#72dfb6;color:#14281f;font-weight:700;} QListWidget{background:#1b2636;border:1px solid #40506a;border-radius:6px;} QListWidget::item{padding:10px;} QListWidget::item:selected{background:#375d55;} QSlider::groove:horizontal{height:6px;background:#35465d;} QSlider::handle:horizontal{background:#72dfb6;width:14px;margin:-5px 0;border-radius:7px;}'''
+STYLE='''QWidget{background:#141c28;color:#e9eef8;font:14px "Segoe UI";} QPushButton,QComboBox,QDoubleSpinBox{background:#26354a;border:1px solid #40506a;border-radius:6px;padding:9px;} QPushButton:hover{background:#34485f;} QPushButton:disabled{color:#6e7a8b;} QPushButton#primary{background:#72dfb6;color:#14281f;font-weight:700;} QListWidget{background:#1b2636;border:1px solid #40506a;border-radius:6px;} QListWidget{padding:5px;} QListWidget::item{padding:0px;} QSlider::groove:horizontal{height:6px;background:#35465d;} QSlider::handle:horizontal{background:#72dfb6;width:14px;margin:-5px 0;border-radius:7px;}'''
 if __name__=='__main__':
     app=QApplication(sys.argv);app.setApplicationName('Simple Video Redactor');app.setStyleSheet(STYLE);window=Window();window.show()
     sys.exit(app.exec())
