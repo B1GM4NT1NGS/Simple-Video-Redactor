@@ -30,6 +30,7 @@ The app always starts with an empty video screen. Click **Import video** to sele
 - **Hide boxes** blacks out areas inside active boxes.
 - Pause and drag to draw a box. Select it to move it, or drag its bottom-right corner to resize.
 - Set each box's start/end times in seconds if it should apply to only part of the video.
+- Drag the film strip to scrub: the paused preview updates to the selected frame. Drag its yellow end handles to trim the beginning/end; the selected range is used for playback and export. You can export a trimmed video even without redaction boxes.
 - Press **Play** for a clean redaction preview. Uncheck clean preview to edit against the original footage.
 - Optionally remove audio.
 - Click **Export redacted MP4**. When asked whether to crop first, choose **No** for an ordinary export or **Yes** to open the crop-and-trim editor.

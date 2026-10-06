@@ -1,5 +1,5 @@
 import sys, pathlib, tempfile, shutil, re, json, subprocess
-from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal,QThread,QSize,QEvent
+from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal,QThread,QSize,QEvent,QObject,QTimer
 from PySide6.QtGui import QPainter,QColor,QPen,QImage,QDesktopServices
 from PySide6.QtWidgets import QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,QFileDialog,QComboBox,QCheckBox,QSlider,QListWidget,QDoubleSpinBox,QMessageBox,QDialog,QStyledItemDelegate,QStyle,QListWidgetItem
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink
@@ -39,6 +39,8 @@ def export_command(source,output,boxes,mode,mute,width,height,crop=None,trim=Non
         cmd += ['-i',str(mask)]
         parts=['[0:v:0]format=gbrp,split[original][blacksrc]','[blacksrc]lutrgb=r=0:g=0:b=0[black]','[1:v:0]format=gbrp[mask]','[black][original][mask]maskedmerge[merged]','[merged]'+','.join(final_filters)+'[out]']
         cmd += ['-filter_complex',';'.join(parts),'-map','[out]']
+    elif not regions:
+        cmd+=['-vf',','.join(final_filters),'-map','0:v:0']
     elif mode=='keep':
         parts=['[0:v:0]format=rgb24,split='+str(len(regions)+1)+'[base]'+''.join(f'[s{i}]' for i in range(len(regions))), '[base]drawbox=0:0:iw:ih:black:t=fill[b0]']
         for i,(x,y,w,h,start,end) in enumerate(regions):
@@ -52,6 +54,25 @@ def export_command(source,output,boxes,mode,mute,width,height,crop=None,trim=Non
         cmd+=['-map','0:a:0?']
         if trim:cmd+=['-af',f'atrim=start={trim[0]}:end={trim[1]},asetpts=PTS-STARTPTS']
     return cmd+['-c:v','libx264','-preset','medium','-crf','18','-pix_fmt','yuv420p','-c:a','aac','-map_metadata','-1','-metadata:s:v:0','rotate=0','-movflags','+faststart',str(output)]
+
+class PreviewSeeker(QObject):
+    def __init__(self,owner,preview):
+        super().__init__(owner);self.owner=owner;self.preview=preview;self.latest=None;self.current=None;self.data=b''
+        self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(65);self.timer.timeout.connect(self.start)
+        self.process=QProcess(self);self.process.readyReadStandardOutput.connect(self.read);self.process.finished.connect(self.finished)
+    def seek(self,seconds):
+        self.owner.need_first=False;self.owner.player.pause();self.owner.player.setPosition(int(seconds*1000));self.latest=seconds;self.timer.start()
+    def read(self):self.data+=bytes(self.process.readAllStandardOutput())
+    def start(self):
+        if self.latest is None or self.process.state()!=QProcess.ProcessState.NotRunning:return
+        self.current=self.latest;self.data=b'';self.process.start(engine(),['-v','error','-ss',str(self.current),'-i',str(self.preview()),'-frames:v','1','-f','image2pipe','-vcodec','png','pipe:1'])
+    def finished(self,code,*args):
+        self.read()
+        if code==0 and self.current==self.latest and self.owner.player.playbackState()!=QMediaPlayer.PlaybackState.PlayingState:
+            image=QImage.fromData(self.data)
+            if not image.isNull():self.owner.screen.image=image;self.owner.screen.update()
+        if self.current!=self.latest:self.start()
+    def shutdown(self):self.timer.stop();self.latest=None;self.process.kill();self.process.waitForFinished(1000)
 
 class Screen(QWidget):
     changed=Signal()
@@ -179,10 +200,10 @@ class CropDialog(QDialog):
         root=QVBoxLayout(self);root.addWidget(QLabel('Drag any yellow corner to crop. Drag inside the crop frame to move it.'))
         self.screen=CropScreen(self);self.screen.image=main.screen.image.copy();self.sink.videoFrameChanged.connect(self.screen.frame);root.addWidget(self.screen,1)
         root.addWidget(QLabel('Drag the yellow timeline handles to remove footage from the beginning or end. Click the strip to scrub.'))
-        self.timeline=TrimTimeline(main.player.duration()/1000);root.addWidget(self.timeline);self.timeline.seek.connect(lambda t:self.player.setPosition(int(t*1000)));self.timeline.changed.connect(self.range_changed)
+        self.timeline=TrimTimeline(main.player.duration()/1000);root.addWidget(self.timeline);self.seeker=PreviewSeeker(self,lambda:main.preview);self.timeline.seek.connect(self.seeker.seek);self.timeline.changed.connect(self.range_changed)
         row=QHBoxLayout();self.play_button=QPushButton('▶ Play selection');self.play_button.clicked.connect(self.toggle);row.addWidget(self.play_button);self.start_time=QDoubleSpinBox();self.end_time=QDoubleSpinBox()
         for spin in [self.start_time,self.end_time]:spin.setDecimals(2);spin.setRange(0,self.timeline.duration);spin.valueChanged.connect(self.numeric_range)
-        self.end_time.setValue(self.timeline.end);row.addWidget(QLabel('Start'));row.addWidget(self.start_time);row.addWidget(QLabel('End'));row.addWidget(self.end_time);root.addLayout(row)
+        self.timeline.start=main.timeline.start;self.timeline.end=main.timeline.end;self.start_time.setValue(self.timeline.start);self.end_time.setValue(self.timeline.end);row.addWidget(QLabel('Start'));row.addWidget(self.start_time);row.addWidget(QLabel('End'));row.addWidget(self.end_time);root.addLayout(row)
         actions=QHBoxLayout();reset=QPushButton('Reset crop & trim');reset.clicked.connect(self.reset);actions.addWidget(reset);actions.addStretch();cancel=QPushButton('Cancel');cancel.clicked.connect(self.reject);actions.addWidget(cancel);apply=QPushButton('Apply & export…');apply.setObjectName('primary');apply.clicked.connect(self.apply);actions.addWidget(apply);root.addLayout(actions)
         self.player.positionChanged.connect(self.position);self.player.playbackStateChanged.connect(lambda s:self.play_button.setText('❚❚ Pause' if s==QMediaPlayer.PlaybackState.PlayingState else '▶ Play selection'));self.player.setSource(QUrl.fromLocalFile(str(main.preview)))
         self.player.mediaStatusChanged.connect(lambda s:self.player.setPosition(main.player.position()) if s==QMediaPlayer.MediaStatus.LoadedMedia else None)
@@ -208,7 +229,7 @@ class CropDialog(QDialog):
         if self.end_time.value()<=self.start_time.value():QMessageBox.warning(self,'Trim times','End must be later than start.');return
         self.numeric_range();self.accept()
     def shutdown(self):
-        self.player.stop();self.player.setSource(QUrl());self.thumbs.kill();self.thumbs.waitForFinished(1000);shutil.rmtree(self.thumb_dir,ignore_errors=True)
+        self.seeker.shutdown();self.player.stop();self.player.setSource(QUrl());self.thumbs.kill();self.thumbs.waitForFinished(1000);shutil.rmtree(self.thumb_dir,ignore_errors=True)
 
 class BoxListDelegate(QStyledItemDelegate):
     deleteRequested=Signal(int)
@@ -246,7 +267,8 @@ class Window(QMainWindow):
         top=QHBoxLayout();self.import_button=QPushButton('Import video…');self.import_button.clicked.connect(self.import_video);self.name=QLabel('MP4, AVI, MOV, MKV and more');top.addWidget(self.import_button);top.addWidget(self.name,1);root.addLayout(top)
         body=QHBoxLayout();root.addLayout(body,1);left=QVBoxLayout();body.addLayout(left,1);right=QVBoxLayout();body.addLayout(right);self.screen=Screen(self);self.sink.videoFrameChanged.connect(self.screen.frame);self.screen.changed.connect(self.refresh);left.addWidget(self.screen,1)
         playback=QHBoxLayout();self.play=QPushButton('▶ Play');self.play.clicked.connect(self.toggle_play);playback.addWidget(self.play);back=QPushButton('−1 sec');back.clicked.connect(lambda:self.player.setPosition(max(0,self.player.position()-1000)));playback.addWidget(back);self.time=QLabel('00:00 / 00:00');playback.addWidget(self.time);self.clean=QCheckBox('Clean redaction preview');self.clean.setChecked(True);self.clean.toggled.connect(self.screen.update);playback.addWidget(self.clean);left.addLayout(playback)
-        self.seek=QSlider(Qt.Orientation.Horizontal);self.seek.sliderMoved.connect(self.player.setPosition);left.addWidget(self.seek)
+        self.timeline=TrimTimeline(0);self.timeline.setEnabled(False);self.seeker=PreviewSeeker(self,lambda:self.preview);self.timeline.seek.connect(self.scrub);left.addWidget(self.timeline);left.addWidget(QLabel('Drag the strip to preview. Drag yellow ends to shorten the export.'))
+        self.thumb_dir=self.cache/'filmstrip';self.thumb_dir.mkdir();self.thumbs=QProcess(self);self.thumbs.finished.connect(self.load_thumbnails)
         hint=QLabel('Pause and drag to draw. Select a box to move it; drag its bottom-right corner to resize.');hint.setWordWrap(True);left.addWidget(hint)
         right.addWidget(QLabel('Redaction method'));self.mode=QComboBox();self.mode.addItems(['Keep boxes visible · black out outside','Hide boxes · black out inside']);self.mode.currentIndexChanged.connect(self.screen.update);right.addWidget(self.mode)
         self.draw_button=QPushButton('+ Draw another box');self.draw_button.clicked.connect(self.new_box);right.addWidget(self.draw_button);self.box_heading=QLabel("Subjects · 0 boxes");right.addWidget(self.box_heading);self.box_list=QListWidget();self.box_list.setMinimumWidth(300);self.box_list.setMinimumHeight(170);self.box_list.setMouseTracking(True);self.box_list.setSpacing(4);self.box_delegate=BoxListDelegate(self.box_list);self.box_delegate.deleteRequested.connect(self.remove_box);self.box_list.setItemDelegate(self.box_delegate);self.box_list.currentRowChanged.connect(self.select_box);right.addWidget(self.box_list,1)
@@ -261,20 +283,31 @@ class Window(QMainWindow):
         self.export_button=QPushButton('Export redacted MP4…');self.export_button.setObjectName('primary');self.export_button.clicked.connect(self.export);right.addWidget(self.export_button)
         self.status=QLabel('Ready to import.');self.status.setWordWrap(True);root.addWidget(self.status)
         self.player.positionChanged.connect(self.position);self.player.durationChanged.connect(self.duration);self.player.playbackStateChanged.connect(lambda s:self.play.setText('❚❚ Pause' if s==QMediaPlayer.PlaybackState.PlayingState else '▶ Play'));self.player.errorOccurred.connect(lambda e,s:self.status.setText('Playback error: '+s));self.refresh()
-    def duration(self,d):self.seek.setRange(0,d);self.position(self.player.position())
+    def duration(self,d):
+        if d>0 and abs(self.timeline.duration-d/1000)>.01:
+            self.timeline.duration=d/1000;self.timeline.start=0.;self.timeline.end=d/1000;self.timeline.setEnabled(True)
+            self.thumbs.start(engine(),['-y','-v','error','-i',str(self.preview),'-vf',f'fps={12/max(.1,d/1000)},scale=120:-1','-frames:v','12',str(self.thumb_dir/'frame-%02d.png')])
+        self.position(self.player.position());self.refresh()
+    def load_thumbnails(self,*args):
+        self.timeline.thumbnails=[QImage(str(p)) for p in sorted(self.thumb_dir.glob('frame-*.png'))];self.timeline.update()
+    def scrub(self,seconds):
+        if not self.busy and self.source:self.seeker.seek(min(seconds,max(0,self.timeline.duration-.05)))
     def position(self,pos):
-        if not self.seek.isSliderDown():self.seek.setValue(pos)
+        self.timeline.position=pos/1000;self.timeline.update()
+        if pos/1000>=self.timeline.end and self.player.playbackState()==QMediaPlayer.PlaybackState.PlayingState:self.player.pause()
         def t(ms):return f'{ms//60000:02d}:{ms//1000%60:02d}'
         self.time.setText(t(pos)+' / '+t(self.player.duration()));self.screen.update()
     def toggle_play(self):
         if self.player.playbackState()==QMediaPlayer.PlaybackState.PlayingState:self.player.pause()
-        else:self.clean.setChecked(True);self.screen.draw=False;self.player.play()
+        else:
+            if not self.timeline.start<=self.player.position()/1000<self.timeline.end:self.player.setPosition(int(self.timeline.start*1000))
+            self.clean.setChecked(True);self.screen.draw=False;self.player.play()
     def refresh(self):
         self.box_list.blockSignals(True);self.box_list.clear();self.box_heading.setText(f'Subjects · {len(self.boxes)} '+('box' if len(self.boxes)==1 else 'boxes'));
         for i,b in enumerate(self.boxes):
             item=QListWidgetItem(f'Box {i+1} · '+('tracked' if b.get('track') else 'fixed')+f" · {b['start']:.2f}s to {b['end']:.2f}s");item.setToolTip('Click the bin on the left to delete this box and its track.');item.setData(Qt.ItemDataRole.UserRole,(i+1,bool(b.get('track')),b['start'],b['end']));self.box_list.addItem(item)
         self.box_list.setCurrentRow(self.selected);self.box_list.blockSignals(False);self.select_box(self.selected)
-        self.import_button.setEnabled(not self.busy);self.export_button.setEnabled(bool(self.source and self.boxes) and not self.busy);self.draw_button.setEnabled(bool(self.source) and not self.busy);self.play.setEnabled(bool(self.source) and not self.busy);self.mode.setEnabled(not self.busy);self.reset_button.setEnabled(bool(self.source) and not self.busy)
+        self.import_button.setEnabled(not self.busy);self.export_button.setEnabled(bool(self.source and self.timeline.end>self.timeline.start) and not self.busy);self.draw_button.setEnabled(bool(self.source) and not self.busy);self.play.setEnabled(bool(self.source) and not self.busy);self.mode.setEnabled(not self.busy);self.reset_button.setEnabled(bool(self.source) and not self.busy);self.timeline.setEnabled(bool(self.source) and not self.busy)
     def select_box(self,i):
         self.selected=i
         for spin in [self.start,self.end]:spin.blockSignals(True);spin.setEnabled(0<=i<len(self.boxes) and not self.busy)
@@ -317,7 +350,7 @@ class Window(QMainWindow):
         self.boxes.pop(index);self.selected=min(index,len(self.boxes)-1);self.refresh();self.screen.update();self.status.setText('Box removed.')
     def clear_changes(self):
         if self.busy:return
-        self.player.pause();self.player.setPosition(0);self.boxes=[];self.selected=-1;self.screen.drag=None;self.screen.draw=True;self.mode.setCurrentIndex(0);self.mute.setChecked(False);self.clean.setChecked(False);self.refresh();self.screen.update();self.status.setText('All changes cleared. The imported video is ready to edit again.')
+        self.timeline.start=0.;self.timeline.end=self.timeline.duration;self.scrub(0);self.boxes=[];self.selected=-1;self.screen.drag=None;self.screen.draw=True;self.mode.setCurrentIndex(0);self.mute.setChecked(False);self.clean.setChecked(False);self.refresh();self.screen.update();self.status.setText('All changes cleared. The imported video is ready to edit again.')
     def clear(self):
         if self.busy:return
         self.boxes=[];self.selected=-1;self.screen.draw=True;self.refresh()
@@ -353,13 +386,14 @@ class Window(QMainWindow):
         if not name:return
         self.load(name)
     def load(self,name):
+        self.seeker.shutdown();self.thumbs.kill();self.thumbs.waitForFinished(1000);self.timeline.thumbnails=[];self.timeline.duration=.1;self.timeline.start=0.;self.timeline.end=0.;self.timeline.update()
         self.player.stop();self.player.setSource(QUrl());self.screen.image=QImage();self.screen.update();self.source=pathlib.Path(name);self.name.setText(self.source.name)
         cmd=[engine(),'-y','-noautorotate','-i',str(self.source),'-map','0:v:0','-map','0:a:0?','-vf','scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-metadata:s:v:0','rotate=0','-movflags','+faststart',str(self.preview)]
         self.run(cmd,'import')
     def export(self):
-        if not self.boxes or self.busy:return
+        if not self.source or self.busy:return
         if any(b['end']<b['start'] for b in self.boxes):QMessageBox.warning(self,'Box times','Each box must end after it starts.');return
-        self.player.pause();crop=None;trim=None
+        self.player.pause();crop=None;trim=(self.timeline.start,self.timeline.end)
         answer=QMessageBox.question(self,'Crop before export?','Would you like to crop this video before you export?\n\nYou can also shorten it using the trim handles.',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No|QMessageBox.StandardButton.Cancel,QMessageBox.StandardButton.No)
         if answer==QMessageBox.StandardButton.Cancel:return
         if answer==QMessageBox.StandardButton.Yes:
@@ -387,7 +421,7 @@ class Window(QMainWindow):
             if self.job and self.job.isRunning():
                 self.job.requestInterruption();self.job.wait()
             self.process.kill();self.process.waitForFinished(3000)
-        self.player.stop();self.player.setSource(QUrl())
+        self.seeker.shutdown();self.thumbs.kill();self.thumbs.waitForFinished(1000);self.player.stop();self.player.setSource(QUrl())
         if self.temp_output and self.temp_output.exists():self.temp_output.unlink(missing_ok=True)
         shutil.rmtree(self.cache,ignore_errors=True);event.accept()
 
