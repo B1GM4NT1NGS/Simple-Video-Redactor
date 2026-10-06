@@ -1,6 +1,6 @@
 # Code signing policy
 
-SignPath Foundation application preparation is in progress. The project has not yet been accepted, and current builds are unsigned. Once approved, the intended attribution is: Free code signing provided by SignPath.io, certificate by SignPath Foundation.
+Current builds are unsigned. The SignPath application was not accepted and the maintainer chose not to use its paid service. No SignPath certificate or signing integration is active.
 
 Author, reviewer and release approver: [B1GM4NT1NGS](https://github.com/B1GM4NT1NGS).
 

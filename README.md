@@ -41,9 +41,17 @@ Cropping applies after redaction. Trimming keeps each box's timing aligned with 
 
 Common import formats include **MP4, AVI, MKV, MOV, WMV, WebM, M4V, MPG/MPEG, MTS/M2TS, TS, 3GP, FLV, VOB, OGV and ASF**. The included FFmpeg engine prepares a playable preview. Actual support depends on the codec, file integrity and encryption; DRM-protected files are unsupported. Exports use **MP4 with H.264 video and AAC audio**.
 
+## Moving subject tracking
+
+Pause on a clear frame, draw a box around the subject, select it, and click **Track selected subject**. Tracking runs locally over the selected box time range, forwards and backwards from the current frame. Choose **Hide boxes** to follow with a black box, or **Keep boxes visible** to follow with a visible window and black out everything else. Multiple fixed and tracked boxes can be combined.
+
+Play or scrub through the entire track before exporting. To correct drift, pause, move or resize the box, then click **Track selected subject** again. Adjusting a box or changing its time range clears its old track. **Make selected box fixed** freezes it at the current position. **Cancel tracking / mask** stops background processing. If the tracker reports a lost subject, no partial track is applied: shorten the time range or redraw and retry. Tracking uses a rectangular region, not a subject-shaped cutout, and can drift during occlusion, abrupt movement or scene cuts.
+
+Tracked boxes are burned into exports, including cropped and trimmed exports.
+
 ## Limits and privacy
 
-Boxes stay fixed in position; automatic motion tracking is not included. Review the entire exported video before sharing it. Audio remains unless you choose to remove it. Rotation metadata is ignored consistently in preview and export. Video processing stays on your computer; importing/exporting never uploads footage. First-time dependency installation needs Internet access. The coffee button opens its website only when clicked.
+Automatic subject tracking is optional; boxes remain fixed until tracked. Review the entire exported video before sharing it. Audio remains unless you choose to remove it. Rotation metadata is ignored consistently in preview and export. Video processing stays on your computer; importing/exporting never uploads footage. First-time dependency installation needs Internet access. The coffee button opens its website only when clicked.
 
 ## Optional portable build
 
@@ -60,11 +68,9 @@ The result appears in `dist/`. The build includes the video engine and Qt runtim
 
 Run `python -m unittest discover -s tests`. The integration check generates synthetic footage and verifies both redaction modes, crop dimensions, trimmed duration, audio retention and redaction timing after trimming.
 
-## License
-
 ## Code signing policy
 
-SignPath application preparation is in progress; current builds are unsigned. See [Code signing policy](CODE_SIGNING.md) and [Privacy policy](PRIVACY.md). Approval and signing are pending. GitHub Actions provides a Windows build workflow; it does not publish executables to Releases.
+Current builds are unsigned. SignPath is not being used. See [Code signing policy](CODE_SIGNING.md) and [Privacy policy](PRIVACY.md). GitHub Actions provides a Windows build workflow; it does not publish executables to Releases.
 
 ## Source license
 

@@ -9,3 +9,7 @@ The MIT license covers this application's own source code only.
 - [PyInstaller](https://pyinstaller.org/en/stable/license.html) is GPL licensed with a bootloader exception permitting application distribution.
 
 This repository distributes application source and dependency references. It does not distribute compiled third-party binaries or a precompiled executable.
+
+## Subject tracking
+
+OpenCV / opencv-contrib-python-headless 4.13.0.92 (Apache-2.0, with separately licensed bundled components): https://github.com/opencv/opencv-python and https://github.com/opencv/opencv . NumPy uses the BSD-3-Clause license: https://numpy.org/doc/stable/license.html . The headless package avoids bundling a second GUI toolkit. Refer to the wheel license files for bundled dependency notices when redistributing binaries.

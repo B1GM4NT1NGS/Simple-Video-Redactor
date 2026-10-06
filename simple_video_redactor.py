@@ -1,5 +1,5 @@
 import sys, pathlib, tempfile, shutil, re, json, subprocess
-from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal
+from PySide6.QtCore import Qt,QUrl,QRectF,QPointF,QProcess,Signal,QThread
 from PySide6.QtGui import QPainter,QColor,QPen,QImage,QDesktopServices
 from PySide6.QtWidgets import QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QPushButton,QLabel,QFileDialog,QComboBox,QCheckBox,QSlider,QListWidget,QDoubleSpinBox,QMessageBox,QDialog
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink
@@ -9,7 +9,19 @@ def engine():
     import imageio_ffmpeg
     return imageio_ffmpeg.get_ffmpeg_exe()
 
-def export_command(source,output,boxes,mode,mute,width,height,crop=None,trim=None):
+from tracking import box_at, track_subject, render_mask
+
+class BackgroundJob(QThread):
+    progress=Signal(int)
+    result=Signal(object)
+    failed=Signal(str)
+    def __init__(self, task, parent):
+        super().__init__(parent);self.task=task
+    def run(self):
+        try:self.result.emit(self.task(self.progress.emit,self.isInterruptionRequested))
+        except Exception as error:self.failed.emit(str(error))
+
+def export_command(source,output,boxes,mode,mute,width,height,crop=None,trim=None,mask=None):
     cmd=[engine(),'-y','-noautorotate','-i',str(source)]
     regions=[]
     for b in boxes:
@@ -23,7 +35,11 @@ def export_command(source,output,boxes,mode,mute,width,height,crop=None,trim=Non
         final_filters.append(f'crop={w}:{h}:{x}:{y}:exact=1')
     if trim:final_filters += [f"trim=start={trim[0]}:end={trim[1]}",'setpts=PTS-STARTPTS']
     final_filters += ['scale=trunc(iw/2)*2:trunc(ih/2)*2','setsar=1']
-    if mode=='keep':
+    if mask:
+        cmd += ['-i',str(mask)]
+        parts=['[0:v:0]format=gbrp,split[original][blacksrc]','[blacksrc]lutrgb=r=0:g=0:b=0[black]','[1:v:0]format=gbrp[mask]','[black][original][mask]maskedmerge[merged]','[merged]'+','.join(final_filters)+'[out]']
+        cmd += ['-filter_complex',';'.join(parts),'-map','[out]']
+    elif mode=='keep':
         parts=['[0:v:0]format=rgb24,split='+str(len(regions)+1)+'[base]'+''.join(f'[s{i}]' for i in range(len(regions))), '[base]drawbox=0:0:iw:ih:black:t=fill[b0]']
         for i,(x,y,w,h,start,end) in enumerate(regions):
             parts += [f'[s{i}]crop={w}:{h}:{x}:{y}:exact=1[c{i}]',f"[b{i}][c{i}]overlay={x}:{y}:format=rgb:enable='between(t,{start},{end})'[b{i+1}]"]
@@ -53,7 +69,7 @@ class Screen(QWidget):
             p.setPen(QColor('#9faec3'));p.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,'Import a video to begin');return
         size=self.image.size();size.scale(self.size(),Qt.AspectRatioMode.KeepAspectRatio)
         self.target=QRectF((self.width()-size.width())/2,(self.height()-size.height())/2,size.width(),size.height());p.drawImage(self.target,self.image)
-        o=self.owner;active=[b for b in o.boxes if b['start']<=o.player.position()/1000<=b['end']]
+        o=self.owner;active=[box_at(b,o.player.position()/1000) for b in o.boxes if b['start']<=o.player.position()/1000<=b['end']]
         def rect(b):return QRectF(self.target.x()+b['x']*self.target.width(),self.target.y()+b['y']*self.target.height(),b['w']*self.target.width(),b['h']*self.target.height())
         if o.clean.isChecked() and not self.drag and o.boxes:
             if o.mode.currentIndex()==0:
@@ -64,7 +80,7 @@ class Screen(QWidget):
                 for b in active:p.fillRect(rect(b),Qt.GlobalColor.black)
         else:
             for i,b in enumerate(o.boxes):
-                r=rect(b);p.setPen(QPen(QColor('#72dfb6') if i==o.selected else QColor('white'),2));p.drawRect(r);p.fillRect(QRectF(r.right()-7,r.bottom()-7,8,8),p.pen().color());p.drawText(r.adjusted(7,3,0,0),str(i+1))
+                r=rect(box_at(b,o.player.position()/1000));p.setPen(QPen(QColor('#72dfb6') if i==o.selected else QColor('white'),2));p.drawRect(r);p.fillRect(QRectF(r.right()-7,r.bottom()-7,8,8),p.pen().color());p.drawText(r.adjusted(7,3,0,0),str(i+1))
     def point(self,event):
         r=self.target;return QPointF(max(0,min(1,(event.position().x()-r.x())/r.width())),max(0,min(1,(event.position().y()-r.y())/r.height())))
     def mousePressEvent(self,event):
@@ -73,7 +89,7 @@ class Screen(QWidget):
         o.player.pause();p=self.point(event);self.drag=None
         if not self.draw:
             for i in reversed(range(len(o.boxes))):
-                b=o.boxes[i]
+                b=o.boxes[i];current=box_at(b,o.player.position()/1000);b.update({k:current[k] for k in ('x','y','w','h')})
                 if abs(p.x()-b['x']-b['w'])<14/self.target.width() and abs(p.y()-b['y']-b['h'])<14/self.target.height():self.drag=('resize',p,dict(b));o.selected=i;break
                 if b['x']<=p.x()<=b['x']+b['w'] and b['y']<=p.y()<=b['y']+b['h']:self.drag=('move',p,dict(b));o.selected=i;break
         if not self.drag:
@@ -82,6 +98,7 @@ class Screen(QWidget):
     def mouseMoveEvent(self,event):
         if not self.drag:return
         kind,start,original=self.drag;p=self.point(event);b=self.owner.boxes[self.owner.selected]
+        if b.get('track'):b.pop('track',None);self.owner.status.setText('Track cleared after box adjustment. Click Track selected subject to retrack from this frame.')
         if kind=='draw':b.update(x=min(p.x(),start.x()),y=min(p.y(),start.y()),w=abs(p.x()-start.x()),h=abs(p.y()-start.y()))
         elif kind=='move':b.update(x=max(0,min(1-b['w'],original['x']+p.x()-start.x())),y=max(0,min(1-b['h'],original['y']+p.y()-start.y())))
         else:b.update(w=max(.005,min(1-b['x'],p.x()-b['x'])),h=max(.005,min(1-b['y'],p.y()-b['y'])))
@@ -196,7 +213,7 @@ class CropDialog(QDialog):
 class Window(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle('Simple Video Redactor');self.resize(1160,780)
-        self.cache=pathlib.Path(tempfile.mkdtemp(prefix='VideoRedactor-'));self.source=None;self.boxes=[];self.selected=-1;self.busy=False;self.operation='';self.preview=self.cache/'preview.mp4';self.output=None;self.temp_output=None
+        self.cache=pathlib.Path(tempfile.mkdtemp(prefix='VideoRedactor-'));self.source=None;self.boxes=[];self.selected=-1;self.busy=False;self.operation='';self.job=None;self.preview=self.cache/'preview.mp4';self.output=None;self.temp_output=None
         self.player=QMediaPlayer(self);self.audio=QAudioOutput(self);self.player.setAudioOutput(self.audio);self.sink=QVideoSink(self);self.player.setVideoSink(self.sink)
         self.process=QProcess(self);self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels);self.log=b'';self.process.readyReadStandardOutput.connect(self.read_log);self.process.finished.connect(self.finished);self.process.errorOccurred.connect(self.process_error)
         central=QWidget();self.setCentralWidget(central);root=QVBoxLayout(central);root.setContentsMargins(24,20,24,20)
@@ -208,11 +225,14 @@ class Window(QMainWindow):
         hint=QLabel('Pause and drag to draw. Select a box to move it; drag its bottom-right corner to resize.');hint.setWordWrap(True);left.addWidget(hint)
         right.addWidget(QLabel('Redaction method'));self.mode=QComboBox();self.mode.addItems(['Keep boxes visible · black out outside','Hide boxes · black out inside']);self.mode.currentIndexChanged.connect(self.screen.update);right.addWidget(self.mode)
         self.draw_button=QPushButton('+ Draw another box');self.draw_button.clicked.connect(self.new_box);right.addWidget(self.draw_button);self.box_list=QListWidget();self.box_list.setMaximumWidth(320);self.box_list.currentRowChanged.connect(self.select_box);right.addWidget(self.box_list,1)
+        self.track_button=QPushButton('Track selected subject');self.track_button.clicked.connect(self.track_selected);right.addWidget(self.track_button)
+        self.untrack_button=QPushButton('Make selected box fixed');self.untrack_button.clicked.connect(self.untrack);right.addWidget(self.untrack_button)
+        self.cancel_button=QPushButton('Cancel tracking / mask');self.cancel_button.clicked.connect(self.cancel_job);self.cancel_button.setVisible(False);right.addWidget(self.cancel_button)
         right.addWidget(QLabel('Selected box times (seconds)'));times=QHBoxLayout();self.start=QDoubleSpinBox();self.end=QDoubleSpinBox()
         for spin in [self.start,self.end]:spin.setDecimals(2);spin.setRange(0,999999);spin.valueChanged.connect(self.change_times)
         times.addWidget(QLabel('From'));times.addWidget(self.start);times.addWidget(QLabel('To'));times.addWidget(self.end);right.addLayout(times)
         delete=QPushButton('Delete selected box');delete.clicked.connect(self.delete_box);right.addWidget(delete);clear=QPushButton('Clear all boxes');clear.clicked.connect(self.clear);right.addWidget(clear)
-        self.mute=QCheckBox('Remove audio from export');right.addWidget(self.mute);note=QLabel('Boxes stay fixed. They do not automatically follow moving subjects. Review the whole exported video before sharing.');note.setWordWrap(True);note.setMaximumWidth(320);right.addWidget(note)
+        self.mute=QCheckBox('Remove audio from export');right.addWidget(self.mute);note=QLabel('Draw around a subject, then click Track selected subject. Tracking can drift: review the whole video, adjust the box and retrack if needed.');note.setWordWrap(True);note.setMaximumWidth(320);right.addWidget(note)
         self.export_button=QPushButton('Export redacted MP4…');self.export_button.setObjectName('primary');self.export_button.clicked.connect(self.export);right.addWidget(self.export_button)
         self.status=QLabel('Ready to import.');self.status.setWordWrap(True);root.addWidget(self.status)
         self.player.positionChanged.connect(self.position);self.player.durationChanged.connect(self.duration);self.player.playbackStateChanged.connect(lambda s:self.play.setText('❚❚ Pause' if s==QMediaPlayer.PlaybackState.PlayingState else '▶ Play'));self.player.errorOccurred.connect(lambda e,s:self.status.setText('Playback error: '+s));self.refresh()
@@ -225,7 +245,7 @@ class Window(QMainWindow):
         if self.player.playbackState()==QMediaPlayer.PlaybackState.PlayingState:self.player.pause()
         else:self.clean.setChecked(True);self.screen.draw=False;self.player.play()
     def refresh(self):
-        self.box_list.blockSignals(True);self.box_list.clear();self.box_list.addItems([f'Box {i+1}' for i in range(len(self.boxes))]);self.box_list.setCurrentRow(self.selected);self.box_list.blockSignals(False);self.select_box(self.selected)
+        self.box_list.blockSignals(True);self.box_list.clear();self.box_list.addItems([f'Box {i+1}'+(' · tracked' if b.get('track') else '') for i,b in enumerate(self.boxes)]);self.box_list.setCurrentRow(self.selected);self.box_list.blockSignals(False);self.select_box(self.selected)
         self.import_button.setEnabled(not self.busy);self.export_button.setEnabled(bool(self.source and self.boxes) and not self.busy);self.draw_button.setEnabled(bool(self.source) and not self.busy);self.play.setEnabled(bool(self.source) and not self.busy);self.mode.setEnabled(not self.busy)
     def select_box(self,i):
         self.selected=i
@@ -233,9 +253,32 @@ class Window(QMainWindow):
         if 0<=i<len(self.boxes):
             self.start.setValue(self.boxes[i]['start']);self.end.setValue(self.boxes[i]['end']);self.screen.draw=False
         for spin in [self.start,self.end]:spin.blockSignals(False)
+        self.track_button.setEnabled(0<=i<len(self.boxes) and not self.busy);self.untrack_button.setEnabled(0<=i<len(self.boxes) and bool(self.boxes[i].get('track')) and not self.busy)
         self.screen.update()
     def change_times(self):
-        if 0<=self.selected<len(self.boxes):self.boxes[self.selected].update(start=self.start.value(),end=self.end.value());self.screen.update()
+        if 0<=self.selected<len(self.boxes):self.boxes[self.selected].pop('track',None);self.boxes[self.selected].update(start=self.start.value(),end=self.end.value());self.refresh();self.screen.update()
+    def start_job(self,task,completed,label):
+        self.busy=True;self.refresh();self.cancel_button.setVisible(True)
+        self.job=BackgroundJob(task,self);self.job.progress.connect(lambda n:self.status.setText(f'{label} {n}%'))
+        self.job.result.connect(completed);self.job.failed.connect(self.job_failed);self.job.start()
+    def job_done(self):
+        self.busy=False;self.cancel_button.setVisible(False);self.refresh()
+    def job_failed(self,message):
+        self.job_done();self.status.setText(message)
+        if 'cancelled' not in message.lower():QMessageBox.warning(self,'Tracking / export',message)
+    def cancel_job(self):
+        if self.job and self.job.isRunning():self.job.requestInterruption();self.status.setText('Cancelling…')
+    def track_selected(self):
+        if self.busy or not 0<=self.selected<len(self.boxes):return
+        self.player.pause();index=self.selected;seed=self.player.position()/1000;box=dict(box_at(self.boxes[index],seed));box.pop('track',None)
+        if not box['start']<=seed<=box['end']:
+            QMessageBox.warning(self,'Choose a frame','Seek to a frame within the selected box time range.');return
+        def complete(samples):
+            self.boxes[index]['track']=samples;self.job_done();self.screen.draw=False;self.status.setText('Tracking complete. Play or scrub to review. To correct: pause, move/resize the box, then track again.');self.screen.update()
+        self.start_job(lambda progress,cancel:track_subject(self.preview,box,seed,progress,cancel),complete,'Tracking subject…')
+    def untrack(self):
+        if self.busy or not 0<=self.selected<len(self.boxes):return
+        box=self.boxes[self.selected];current=box_at(box,self.player.position()/1000);box.update({k:current[k] for k in ('x','y','w','h')});box.pop('track',None);self.refresh();self.screen.update()
     def new_box(self):self.player.pause();self.screen.draw=True;self.clean.setChecked(False);self.selected=-1;self.refresh();self.status.setText('Drag on the video to draw a box.')
     def delete_box(self):
         if self.busy:return
@@ -296,11 +339,19 @@ class Window(QMainWindow):
         if output.suffix.lower()!='.mp4':output=output.with_suffix('.mp4')
         if output.resolve()==self.source.resolve():QMessageBox.warning(self,'Choose a different file','Choose a new filename to preserve the original.');return
         self.output=output;self.temp_output=output.with_name(output.stem+'.rendering-'+next(tempfile._get_candidate_names())+'.mp4');self.player.pause()
-        self.run(export_command(self.source,self.temp_output,[dict(b) for b in self.boxes],'keep' if self.mode.currentIndex()==0 else 'hide',self.mute.isChecked(),self.width,self.height,crop,trim),'export')
+        boxes=[dict(b) for b in self.boxes];mode='keep' if self.mode.currentIndex()==0 else 'hide'
+        if any(b.get('track') for b in boxes):
+            mask=self.cache/'tracking-mask.mkv'
+            def complete(_):
+                self.job_done();self.run(export_command(self.source,self.temp_output,boxes,mode,self.mute.isChecked(),self.width,self.height,crop,trim,mask),'export')
+            self.start_job(lambda progress,cancel:render_mask(engine(),self.preview,mask,boxes,mode,self.width,self.height,progress,cancel),complete,'Preparing moving redactions…')
+        else:self.run(export_command(self.source,self.temp_output,boxes,mode,self.mute.isChecked(),self.width,self.height,crop,trim),'export')
     def closeEvent(self,event):
         if self.busy:
             answer=QMessageBox.question(self,'Processing in progress','Cancel processing and close?')
             if answer!=QMessageBox.StandardButton.Yes:event.ignore();return
+            if self.job and self.job.isRunning():
+                self.job.requestInterruption();self.job.wait()
             self.process.kill();self.process.waitForFinished(3000)
         self.player.stop();self.player.setSource(QUrl())
         if self.temp_output and self.temp_output.exists():self.temp_output.unlink(missing_ok=True)
