@@ -23,6 +23,12 @@ The download contains source files, not a compiled executable. The app opens wit
 - **Clear all changes:** reset the edit while keeping the imported video open.
 - **MP4 export:** burn redactions into the video, with optional audio removal.
 
+## Redaction templates
+
+Draw your usual redaction areas, choose the redaction mode, and click **Save current layout…**. Give the template a name. After importing another video, choose that name from **Redaction templates** to replace the current boxes with the saved layout. Areas are proportional to the video size and apply for the entire clip. Templates save fixed regions only; tracked boxes are saved at their current position.
+
+Templates persist locally between launches. **Delete saved template** removes a preset without removing the current boxes. **Clear all changes** does not delete saved templates. Audio removal is a separate checkbox and is preserved when applying a template.
+
 ## How to use it
 
 Import a video, pause on a clear frame, and draw a box. Choose **Hide boxes** or **Keep boxes visible**. Select a box and click **Track selected subject** if it should follow movement. Repeat for additional subjects.
