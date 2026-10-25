@@ -21,7 +21,10 @@ The download contains source files, not a compiled executable. The app opens wit
 - **Crop before export:** drag the crop frame's corners to remove unwanted edges.
 - **Box controls:** numbered cards show tracking status and timing, with a bin beside each box.
 - **Clear all changes:** reset the edit while keeping the imported video open.
-- **MP4 export:** burn redactions into the video, with optional audio removal.
+- **Live redaction preview:** blacked-out areas remain visible while drawing and adjusting boxes.
+- **Processing feedback:** animated busy indicator during preview preparation and export, plus export percentage.
+- **MP4 export:** burn redactions into the video. Audio removal is selected by default; untick it to retain sound. Suggested filenames end in `_exported.mp4`.
+- **Windows app icon:** custom window, taskbar and executable icon.
 
 ## Redaction templates
 

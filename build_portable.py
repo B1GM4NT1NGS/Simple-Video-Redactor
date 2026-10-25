@@ -10,7 +10,7 @@ with tempfile.TemporaryDirectory(prefix='simple-video-redactor-build-') as scrat
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onefile','--windowed','--name','Simple Video Redactor','--distpath',str(root/'dist'),'--workpath',str(pathlib.Path(scratch)/'build'),'--specpath',scratch,'--exclude-module','imageio_ffmpeg','--add-binary',str(ffmpeg)+';.']
     for name in ['VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll','MSVCP140_1.dll','MSVCP140_2.dll']:
         command+=['--add-binary',str(qt/name)+';.']
-    command+=[str(root/'simple_video_redactor.py')]
+    command+=['--icon',str(root/'assets'/'app-icon.ico'),'--add-data',str(root/'assets'/'app-icon.ico')+';assets',str(root/'simple_video_redactor.py')]
     env=os.environ.copy()
     env['PATH']=os.pathsep.join([str(pathlib.Path(sys.executable).parent),str(pathlib.Path(os.environ['SystemRoot'])/'System32'),os.environ['SystemRoot']])
     subprocess.run(command,cwd=root,env=env,check=True)
